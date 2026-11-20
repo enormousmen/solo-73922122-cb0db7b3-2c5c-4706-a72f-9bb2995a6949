@@ -1,0 +1,32 @@
+{
+  "zones": [
+    {
+      "name": "a.example.com",
+      "records": [
+        {"name": "www.a.example.com", "type": "CNAME", "value": "t.b.example.com", "ttl": 30}
+      ],
+      "new_records": [
+        {"name": "www.a.example.com", "type": "CNAME", "value": "u.b.example.com", "ttl": 30}
+      ]
+    },
+    {
+      "name": "b.example.com",
+      "records": [
+        {"name": "t.b.example.com", "type": "A", "value": "10.40.1.1", "ttl": 30}
+      ],
+      "new_records": [
+        {"name": "u.b.example.com", "type": "A", "value": "10.40.2.1", "ttl": 30}
+      ]
+    },
+    {
+      "name": "c.example.com",
+      "records": [
+        {"name": "monitor.c.example.com", "type": "A", "value": "10.40.3.1", "ttl": 30}
+      ],
+      "new_records": [
+        {"name": "monitor.c.example.com", "type": "A", "value": "10.40.3.2", "ttl": 30}
+      ]
+    }
+  ],
+  "required_domains": ["www.a.example.com", "monitor.c.example.com"]
+}

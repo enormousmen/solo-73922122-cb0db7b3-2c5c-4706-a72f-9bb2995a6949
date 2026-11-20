@@ -1,0 +1,41 @@
+{
+  "zones": [
+    {
+      "name": "a.example.com",
+      "records": [
+        {"name": "one.a.example.com", "type": "CNAME", "value": "keep.b.example.com"},
+        {"name": "two.a.example.com", "type": "CNAME", "value": "keep.c.example.com"}
+      ],
+      "new_records": [
+        {"name": "one.a.example.com", "type": "CNAME", "value": "gone.b.example.com"},
+        {"name": "two.a.example.com", "type": "CNAME", "value": "keep.c.example.com"}
+      ]
+    },
+    {
+      "name": "b.example.com",
+      "records": [
+        {"name": "keep.b.example.com", "type": "A", "value": "10.50.1.1"}
+      ],
+      "new_records": []
+    },
+    {
+      "name": "c.example.com",
+      "records": [
+        {"name": "keep.c.example.com", "type": "A", "value": "10.50.2.1"}
+      ],
+      "new_records": [
+        {"name": "keep.c.example.com", "type": "CNAME", "value": "keep.c.example.com"}
+      ]
+    },
+    {
+      "name": "d.example.com",
+      "records": [
+        {"name": "monitor.d.example.com", "type": "A", "value": "10.50.3.1"}
+      ],
+      "new_records": [
+        {"name": "monitor.d.example.com", "type": "A", "value": "10.50.3.2"}
+      ]
+    }
+  ],
+  "required_domains": ["one.a.example.com", "two.a.example.com", "monitor.d.example.com"]
+}

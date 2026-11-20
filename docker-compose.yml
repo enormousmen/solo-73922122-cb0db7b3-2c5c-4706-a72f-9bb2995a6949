@@ -1,0 +1,26 @@
+services:
+  dns-planner:
+    build:
+      context: .
+    image: dns-release-planner:1.0.0
+    container_name: dns-release-planner
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=2).status == 200 else 1)
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

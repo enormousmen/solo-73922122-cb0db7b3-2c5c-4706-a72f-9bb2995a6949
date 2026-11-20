@@ -1,0 +1,14 @@
+# Build context only needs app code and requirements.
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.git/
+.gitignore
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
+tests/
+examples/

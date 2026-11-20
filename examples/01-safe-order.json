@@ -1,0 +1,24 @@
+{
+  "zones": [
+    {
+      "name": "a.example.com",
+      "records": [
+        {"name": "www.a.example.com", "type": "CNAME", "value": "svc.b.example.com", "ttl": 60}
+      ],
+      "new_records": [
+        {"name": "www.a.example.com", "type": "CNAME", "value": "svc2.b.example.com", "ttl": 60}
+      ]
+    },
+    {
+      "name": "b.example.com",
+      "records": [
+        {"name": "svc.b.example.com", "type": "A", "value": "10.20.1.10", "ttl": 60}
+      ],
+      "new_records": [
+        {"name": "svc.b.example.com", "type": "A", "value": "10.20.1.10", "ttl": 60},
+        {"name": "svc2.b.example.com", "type": "A", "value": "10.20.2.10", "ttl": 60}
+      ]
+    }
+  ],
+  "required_domains": ["www.a.example.com"]
+}
