@@ -75,3 +75,69 @@ class PlanResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+
+
+# --------------------------------------------------------------------------- #
+# Cache-restart simulation
+# --------------------------------------------------------------------------- #
+
+
+class SecondBucket(BaseModel):
+    second: int
+    queries: int
+
+
+class PeakSecond(BaseModel):
+    second: int | None
+    queries: int
+
+
+class ZoneTraffic(BaseModel):
+    zone: str
+    latency_ms: int
+    upstream_queries: int
+    # Only seconds in which the zone actually received an upstream query.
+    seconds: list[SecondBucket]
+    peak: PeakSecond
+
+
+class QueryTraceStep(BaseModel):
+    name: str
+    zone: str | None
+    outcome: Literal[
+        "cname", "a", "nodata", "nxdomain", "external", "loop", "too_long"
+    ]
+    target: str | None = None
+    addresses: list[str] = Field(default_factory=list)
+
+
+class QueryResult(BaseModel):
+    query_id: int
+    domain: str
+    started_at_ms: int
+    completion_ms: int
+    resolved: bool
+    addresses: list[str]
+    category: Literal[
+        "missing_record", "cname_loop", "external_target", "chain_too_long"
+    ] | None = None
+    category_label: str | None = None
+    detail: str | None = None
+    message: str
+    chain: str
+    trace: list[QueryTraceStep]
+    cache_hits: int
+    coalesced_waits: int
+    upstream_sent: int
+
+
+class SimulateResponse(BaseModel):
+    mode: Literal["cold_cache_simulation"]
+    zone_count: int
+    query_count: int
+    assumptions: list[str]
+    zones: list[ZoneTraffic]
+    total_upstream_queries: int
+    finish_ms: int
+    results: list[QueryResult]
+    failure_summary: FailureSummary

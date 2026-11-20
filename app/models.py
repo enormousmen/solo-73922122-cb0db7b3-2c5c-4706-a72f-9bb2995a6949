@@ -32,6 +32,7 @@ MAX_NAME_LENGTH = 253
 MAX_ZONES = 8
 MAX_RECORDS_PER_ZONE = 256
 MAX_REQUIRED_DOMAINS = 64
+MAX_QUERIES = 500
 
 
 def normalize_name(name: str) -> str:
@@ -96,6 +97,46 @@ class Record(BaseModel):
         return self
 
 
+def _check_rrset(zone_name: str, field: str, records: list[Record]) -> None:
+    """Validate one authoritative snapshot of a zone's records."""
+    owned: dict[str, tuple[str, set[str]]] = {}
+    for rec in records:
+        if not in_zone(rec.name, zone_name):
+            raise ValueError(
+                f"{field}: {rec.name!r} is not owned by zone {zone_name!r} "
+                "(zones must be self-contained)"
+            )
+        if rec.name == zone_name and rec.type == "CNAME":
+            raise ValueError(
+                f"{field}: CNAME at the zone apex {zone_name!r} is not "
+                "valid in authoritative DNS (the apex holds SOA/NS)"
+            )
+        previous = owned.get(rec.name)
+        if previous is not None and previous[0] != rec.type:
+            raise ValueError(
+                f"{field}: {rec.name!r} has both A and CNAME records, "
+                "which authoritative DNS forbids"
+            )
+        targets = previous[1] if previous else set()
+        if rec.type == "CNAME":
+            targets.add(rec.value)
+            if len(targets) > 1:
+                raise ValueError(
+                    f"{field}: {rec.name!r} has conflicting CNAME targets"
+                )
+        owned[rec.name] = (rec.type, targets)
+
+    # A name holding a CNAME cannot also have names below it.
+    cnames = [n for n, (t, _targets) in owned.items() if t == "CNAME"]
+    for cname in cnames:
+        suffix = "." + cname
+        if any(other != cname and other.endswith(suffix) for other in owned):
+            raise ValueError(
+                f"{field}: {cname!r} is a CNAME but also has names below "
+                "it; authoritative DNS forbids that"
+            )
+
+
 class Zone(BaseModel):
     """One authoritative zone described by its current and next state.
 
@@ -119,47 +160,9 @@ class Zone(BaseModel):
 
     @model_validator(mode="after")
     def _check_zone_records(self) -> "Zone":
-        self._check_rrset("records", self.records)
-        self._check_rrset("new_records", self.new_records)
+        _check_rrset(self.name, "records", self.records)
+        _check_rrset(self.name, "new_records", self.new_records)
         return self
-
-    def _check_rrset(self, field: str, records: list[Record]) -> None:
-        owned: dict[str, tuple[str, set[str]]] = {}
-        for rec in records:
-            if not in_zone(rec.name, self.name):
-                raise ValueError(
-                    f"{field}: {rec.name!r} is not owned by zone {self.name!r} "
-                    "(zones must be self-contained)"
-                )
-            if rec.name == self.name and rec.type == "CNAME":
-                raise ValueError(
-                    f"{field}: CNAME at the zone apex {self.name!r} is not "
-                    "valid in authoritative DNS (the apex holds SOA/NS)"
-                )
-            previous = owned.get(rec.name)
-            if previous is not None and previous[0] != rec.type:
-                raise ValueError(
-                    f"{field}: {rec.name!r} has both A and CNAME records, "
-                    "which authoritative DNS forbids"
-                )
-            targets = previous[1] if previous else set()
-            if rec.type == "CNAME":
-                targets.add(rec.value)
-                if len(targets) > 1:
-                    raise ValueError(
-                        f"{field}: {rec.name!r} has conflicting CNAME targets"
-                    )
-            owned[rec.name] = (rec.type, targets)
-
-        # A name holding a CNAME cannot also have names below it.
-        cnames = [n for n, (t, _targets) in owned.items() if t == "CNAME"]
-        for cname in cnames:
-            suffix = "." + cname
-            if any(other != cname and other.endswith(suffix) for other in owned):
-                raise ValueError(
-                    f"{field}: {cname!r} is a CNAME but also has names below "
-                    "it; authoritative DNS forbids that"
-                )
 
 
 class PlanRequest(BaseModel):
@@ -178,20 +181,93 @@ class PlanRequest(BaseModel):
 
     @model_validator(mode="after")
     def _check_topology(self) -> "PlanRequest":
-        names = [z.name for z in self.zones]
-        if len(set(names)) != len(names):
-            raise ValueError("duplicate zone names")
-        for a in names:
-            for b in names:
-                if a != b and in_zone(a, b):
-                    raise ValueError(
-                        f"zones must be non-nested: {a!r} is inside {b!r}"
-                    )
-        for domain in self.required_domains:
-            if zone_covering(domain, names) is None:
-                raise ValueError(
-                    f"required domain {domain!r} is not inside any submitted "
-                    "zone; the planner only has authoritative data for the "
-                    "submitted zones"
-                )
+        validate_zone_topology(self.zones)
+        _check_domains_covered(self.required_domains, [z.name for z in self.zones])
+        return self
+
+
+def validate_zone_topology(zones: list[Zone] | list[SimZone]) -> None:
+    """Zones must be unique and non-nested (no zone inside another)."""
+    names = [z.name for z in zones]
+    if len(set(names)) != len(names):
+        raise ValueError("duplicate zone names")
+    for a in names:
+        for b in names:
+            if a != b and in_zone(a, b):
+                raise ValueError(f"zones must be non-nested: {a!r} is inside {b!r}")
+
+
+def _check_domains_covered(domains: list[str], zone_names: list[str]) -> None:
+    for domain in domains:
+        if zone_covering(domain, zone_names) is None:
+            raise ValueError(
+                f"domain {domain!r} is not inside any submitted zone; the "
+                "planner only has authoritative data for the submitted zones"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# Cache-restart simulation
+# --------------------------------------------------------------------------- #
+
+
+class SimZone(BaseModel):
+    """An authoritative zone taking part in the cache simulation.
+
+    The simulation always evaluates the zone's *live* data (``records``),
+    i.e. the state right after the recursive resolver restarts.  ``new_records``
+    is accepted and validated for symmetry with ``/plan`` but is not used:
+    there is no cutover during the measurement window.
+    """
+
+    name: str
+    records: list[Record] = Field(default_factory=list, max_length=MAX_RECORDS_PER_ZONE)
+    new_records: list[Record] = Field(
+        default_factory=list, max_length=MAX_RECORDS_PER_ZONE
+    )
+    # Fixed round-trip time to this authority in milliseconds.  It must be a
+    # positive integer; floats such as 1.5 are rejected rather than truncated.
+    latency_ms: int = Field(strict=True, gt=0, le=60_000)
+
+    @field_validator("name")
+    @classmethod
+    def _valid_zone(cls, v: str) -> str:
+        return validate_name(v, "zone name")
+
+    @model_validator(mode="after")
+    def _check_zone_records(self) -> "SimZone":
+        _check_rrset(self.name, "records", self.records)
+        _check_rrset(self.name, "new_records", self.new_records)
+        return self
+
+
+class Query(BaseModel):
+    """One A query issued to the recursive resolver at ``at_ms``.
+
+    ``at_ms`` is the number of milliseconds since the resolver restarted and
+    must be a non-negative integer.  Repeating a name at different times is
+    allowed (that is how cache reuse and TTL expiry are exercised).
+    """
+
+    name: str
+    at_ms: int = Field(strict=True, ge=0, le=2_147_483_647)
+
+    @field_validator("name")
+    @classmethod
+    def _valid_name(cls, v: str) -> str:
+        return validate_name(v, "query name")
+
+
+class SimulateRequest(BaseModel):
+    """Zones in ``/plan`` format plus a per-zone upstream latency, and queries."""
+
+    zones: list[SimZone] = Field(min_length=1, max_length=MAX_ZONES)
+    queries: list[Query] = Field(min_length=1, max_length=MAX_QUERIES)
+
+    @model_validator(mode="after")
+    def _check_topology(self) -> "SimulateRequest":
+        validate_zone_topology(self.zones)
+        # Query names may legitimately fall outside the submitted zones; such a
+        # chain is reported as ``external_target`` exactly like in /plan, where
+        # a CNAME may leave the submitted zones.
         return self

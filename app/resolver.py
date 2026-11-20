@@ -78,6 +78,80 @@ def _record_map(records: list[Record]) -> dict[str, list[Record]]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Failure constructors shared with the cache simulator
+#
+# They append the final trace entry and build the same category/detail/message
+# that the planner reports, so both APIs describe a broken chain identically.
+# --------------------------------------------------------------------------- #
+
+
+def loop_resolution(
+    domain: str, name: str, zone: str | None, trace: list[TraceEntry]
+) -> Resolution:
+    trace.append(TraceEntry(name=name, zone=zone, outcome="loop"))
+    return Resolution(
+        domain=domain,
+        addresses=[],
+        trace=trace,
+        category="cname_loop",
+        message=f"{domain} 的 CNAME 链成环，无法解析出 IPv4 地址",
+    )
+
+
+def external_resolution(
+    domain: str, name: str, trace: list[TraceEntry]
+) -> Resolution:
+    trace.append(TraceEntry(name=name, zone=None, outcome="external"))
+    return Resolution(
+        domain=domain,
+        addresses=[],
+        trace=trace,
+        category="external_target",
+        message=(
+            f"{domain} 的解析链到达 {name}，该名称不在任何已提交的"
+            "权威区内，无法确认其 IPv4 地址"
+        ),
+    )
+
+
+def missing_resolution(
+    domain: str,
+    name: str,
+    zone_name: str,
+    exists: bool,
+    trace: list[TraceEntry],
+) -> Resolution:
+    outcome: Outcome = "nodata" if exists else "nxdomain"
+    trace.append(TraceEntry(name=name, zone=zone_name, outcome=outcome))
+    reason = (
+        "该名称存在但没有 A/CNAME 记录（NODATA）"
+        if exists
+        else "该名称不存在（NXDOMAIN）"
+    )
+    return Resolution(
+        domain=domain,
+        addresses=[],
+        trace=trace,
+        category="missing_record",
+        detail=outcome,
+        message=f"{domain} 的解析链在 {name} 断开：区 {zone_name} 中{reason}",
+    )
+
+
+def too_long_resolution(
+    domain: str, name: str, trace: list[TraceEntry]
+) -> Resolution:
+    trace.append(TraceEntry(name=name, zone=None, outcome="too_long"))
+    return Resolution(
+        domain=domain,
+        addresses=[],
+        trace=trace,
+        category="chain_too_long",
+        message=f"{domain} 的 CNAME 链超过 {MAX_CNAME_HOPS} 跳，视为不可解析",
+    )
+
+
 class Resolver:
     def __init__(self, zones: list[Zone]) -> None:
         self.zones = zones
@@ -106,6 +180,12 @@ class Resolver:
         exists = any(owner_name.endswith(suffix) for owner_name in data)
         return zone_name, records, exists
 
+    def lookup(
+        self, name: str, released: frozenset[int] = frozenset()
+    ) -> tuple[str | None, list[Record], bool]:
+        """Public form of :meth:`_lookup`, used by the cache simulator."""
+        return self._lookup(name, released)
+
     def resolve(self, domain: str, released: frozenset[int]) -> Resolution:
         trace: list[TraceEntry] = []
         visited: set[str] = set()
@@ -113,45 +193,14 @@ class Resolver:
         for _ in range(MAX_CNAME_HOPS + 1):
             if name in visited:
                 loop_zone, _recs, _exists = self._lookup(name, released)
-                trace.append(TraceEntry(name=name, zone=loop_zone, outcome="loop"))
-                return Resolution(
-                    domain=domain,
-                    addresses=[],
-                    trace=trace,
-                    category="cname_loop",
-                    message=f"{domain} 的 CNAME 链成环，无法解析出 IPv4 地址",
-                )
+                return loop_resolution(domain, name, loop_zone, trace)
             visited.add(name)
 
             zone_name, records, exists = self._lookup(name, released)
             if zone_name is None:
-                trace.append(TraceEntry(name=name, zone=None, outcome="external"))
-                return Resolution(
-                    domain=domain,
-                    addresses=[],
-                    trace=trace,
-                    category="external_target",
-                    message=(
-                        f"{domain} 的解析链到达 {name}，该名称不在任何已提交的"
-                        "权威区内，无法确认其 IPv4 地址"
-                    ),
-                )
+                return external_resolution(domain, name, trace)
             if not records:
-                outcome: Outcome = "nodata" if exists else "nxdomain"
-                trace.append(TraceEntry(name=name, zone=zone_name, outcome=outcome))
-                reason = (
-                    "该名称存在但没有 A/CNAME 记录（NODATA）"
-                    if exists
-                    else "该名称不存在（NXDOMAIN）"
-                )
-                return Resolution(
-                    domain=domain,
-                    addresses=[],
-                    trace=trace,
-                    category="missing_record",
-                    detail=outcome,
-                    message=f"{domain} 的解析链在 {name} 断开：区 {zone_name} 中{reason}",
-                )
+                return missing_resolution(domain, name, zone_name, exists, trace)
 
             cname = next((r for r in records if r.type == "CNAME"), None)
             if cname is not None:
@@ -169,14 +218,7 @@ class Resolver:
             )
             return Resolution(domain=domain, addresses=addresses, trace=trace)
 
-        trace.append(TraceEntry(name=name, zone=None, outcome="too_long"))
-        return Resolution(
-            domain=domain,
-            addresses=[],
-            trace=trace,
-            category="chain_too_long",
-            message=f"{domain} 的 CNAME 链超过 {MAX_CNAME_HOPS} 跳，视为不可解析",
-        )
+        return too_long_resolution(domain, name, trace)
 
     def resolve_all(
         self, domains: list[str], released: frozenset[int]
